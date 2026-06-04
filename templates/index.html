@@ -10,41 +10,40 @@
     <main class="shell">
       <section class="topbar">
         <div>
-          <h1>Detector YOLO</h1>
-          <p>Modelo: {{ model_path }}</p>
+          <span class="eyebrow">Inspeccion visual</span>
+          <h1>Detector YOLO en vivo</h1>
+          <p>{{ model_path }}</p>
         </div>
         <div class="status" id="status">Listo</div>
       </section>
 
       <section class="workspace">
         <aside class="panel controls">
-          <label class="file-drop" for="imageInput">
-            <span>Seleccionar imagen</span>
-            <small>JPG, PNG o captura desde camara</small>
-          </label>
-          <input id="imageInput" type="file" accept="image/*">
+          <div class="control-group">
+            <div class="group-title">
+              <h2>Control</h2>
+            </div>
 
-          <div class="field">
-            <label for="confidence">Confianza minima</label>
-            <div class="range-row">
-              <input id="confidence" type="range" min="0.1" max="0.9" value="{{ confidence }}" step="0.05">
-              <strong id="confidenceValue">{{ confidence }}</strong>
+            <div class="button-row">
+              <button id="detectLive" type="button">Detectar</button>
+              <button id="stopLive" type="button" class="secondary">Detener</button>
             </div>
           </div>
 
-          <div class="button-row">
-            <button id="detectUpload" type="button">Detectar imagen</button>
-            <button id="startCamera" type="button" class="secondary">Iniciar camara</button>
+          <div class="control-group">
+            <div class="field">
+              <div class="field-head">
+                <label for="confidence">Confianza minima</label>
+                <strong id="confidenceValue">{{ confidence }}</strong>
+              </div>
+              <input id="confidence" type="range" min="0.1" max="0.9" value="{{ confidence }}" step="0.05">
+            </div>
           </div>
 
-          <div class="camera-box" id="cameraBox">
-            <video id="video" autoplay playsinline></video>
-            <button id="captureFrame" type="button">Deteccion en vivo</button>
-            <button id="stopLive" type="button" class="secondary">Detener</button>
-          </div>
-
-          <div class="classes">
-            <h2>Clases del modelo</h2>
+          <div class="control-group classes">
+            <div class="group-title">
+              <h2>Etiquetas</h2>
+            </div>
             <div class="chips">
               {% for label in labels %}
                 <span>{{ label }}</span>
@@ -54,25 +53,36 @@
         </aside>
 
         <section class="results">
-          <div class="preview-grid">
-            <article class="image-panel">
-              <header>Entrada</header>
-              <img id="inputPreview" alt="">
-              <div class="empty" id="inputEmpty">Aun no hay imagen</div>
-            </article>
-            <article class="image-panel">
-              <header>Resultado</header>
+          <video id="video" class="source-video" autoplay playsinline muted></video>
+
+          <div class="scan-layout">
+            <article class="image-panel live-panel">
+              <header>
+                <span>Deteccion en tiempo real</span>
+                <span id="summary">0 objetos</span>
+              </header>
               <img id="outputPreview" alt="">
-              <div class="empty" id="outputEmpty">Aun no hay deteccion</div>
+              <div class="empty" id="outputEmpty">Camara inactiva</div>
             </article>
+
+            <aside class="chart-panel">
+              <header>
+                <h2>Distribucion</h2>
+                <span id="chartTotal">0 total</span>
+              </header>
+              <div class="chart-wrap">
+                <canvas id="detectionsChart" width="260" height="260"></canvas>
+                <div class="chart-empty" id="chartEmpty">Sin detecciones</div>
+              </div>
+              <div class="legend" id="chartLegend"></div>
+            </aside>
           </div>
 
           <article class="live-state" id="liveState">No detecta nada</article>
 
           <article class="table-panel">
             <header>
-              <h2>Detecciones</h2>
-              <span id="summary">0 objetos</span>
+              <h2>Detalle de detecciones</h2>
             </header>
             <div class="table-wrap">
               <table>

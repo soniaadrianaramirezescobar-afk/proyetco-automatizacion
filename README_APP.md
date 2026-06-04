@@ -26,14 +26,14 @@ http://127.0.0.1:5000
 
 ## Uso
 
-Puedes subir una imagen o activar la camara del navegador.
-
-En modo camara, pulsa `Deteccion en vivo`. La app toma frames de la camara continuamente, los manda al modelo y actualiza la interfaz con:
+Pulsa `Detectar` y acepta el permiso de camara del navegador. La app toma frames de la camara continuamente, los manda al modelo y actualiza la interfaz con:
 
 - Imagen anotada con cajas.
-- Etiquetas detectadas.
+- Todas las etiquetas detectadas en el frame actual.
 - Confianza y coordenadas.
 - Mensaje `No detecta nada` cuando no hay detecciones con la confianza seleccionada.
+
+Si detecta varias etiquetas al mismo tiempo, las muestra juntas en el estado principal y detalladas en la tabla.
 
 ## Cambiar modelo o confianza
 

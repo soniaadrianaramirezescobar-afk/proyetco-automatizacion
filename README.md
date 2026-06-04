@@ -1,6 +1,6 @@
 ﻿# Proyecto de automatizacion - Detector YOLO
 
-Aplicacion web local para detectar el estado de una botella usando un modelo YOLO entrenado con datos de Roboflow. La app permite subir una imagen o usar la camara del navegador en modo de deteccion en vivo.
+Aplicacion web local para detectar en tiempo real el estado de una botella usando un modelo YOLO entrenado con datos de Roboflow. La deteccion se realiza directamente con la camara del navegador.
 
 ## Que detecta
 
@@ -62,10 +62,10 @@ http://127.0.0.1:5000
 
 1. Abre la app en `http://127.0.0.1:5000`.
 2. Ajusta la confianza minima si quieres detecciones mas estrictas o mas permisivas.
-3. Para probar una imagen, pulsa `Seleccionar imagen` y luego `Detectar imagen`.
-4. Para deteccion en vivo, pulsa `Iniciar camara` y acepta el permiso del navegador.
-5. Pulsa `Deteccion en vivo` para que la app analice frames continuamente.
-6. Revisa la imagen anotada, las etiquetas detectadas, la confianza y las coordenadas.
+3. Pulsa `Detectar` y acepta el permiso de camara del navegador.
+4. La app analiza frames continuamente en tiempo real.
+5. Revisa la imagen anotada, todas las etiquetas detectadas, la confianza y las coordenadas.
+6. Si detecta varias etiquetas en el mismo frame, las muestra juntas en el estado y detalladas en la tabla.
 7. Pulsa `Detener` para parar la camara.
 
 ## Cambiar modelo o confianza
@@ -108,3 +108,4 @@ testeo/                 Archivos de prueba; sus carpetas internas estan ignorada
 - La app corre localmente con el servidor de desarrollo de Flask.
 - Para produccion se recomienda usar un servidor WSGI.
 - Los archivos generados por Python, caches y carpetas de pruebas estan controlados desde `.gitignore`.
+

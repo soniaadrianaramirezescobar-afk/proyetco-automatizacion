@@ -45,9 +45,15 @@ def encode_image(image_rgb):
 
 def run_detection(image, confidence):
     frame = np.array(image)
-    result = model.predict(frame, conf=confidence, verbose=False)[0]
+    result = model.predict(
+        frame,
+        conf=confidence,
+        iou=0.8,
+        max_det=50,
+        agnostic_nms=False,
+        verbose=False,
+    )[0]
     annotated = result.plot()
-    annotated_rgb = cv2.cvtColor(annotated, cv2.COLOR_BGR2RGB)
 
     detections = []
     for box in result.boxes:
@@ -66,7 +72,7 @@ def run_detection(image, confidence):
             }
         )
 
-    return annotated_rgb, detections
+    return annotated, detections
 
 
 @app.get("/")
