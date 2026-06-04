@@ -1,0 +1,98 @@
+<!doctype html>
+<html lang="es">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Detector YOLO</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='styles.css') }}">
+  </head>
+  <body>
+    <main class="shell">
+      <section class="topbar">
+        <div>
+          <h1>Detector YOLO</h1>
+          <p>Modelo: {{ model_path }}</p>
+        </div>
+        <div class="status" id="status">Listo</div>
+      </section>
+
+      <section class="workspace">
+        <aside class="panel controls">
+          <label class="file-drop" for="imageInput">
+            <span>Seleccionar imagen</span>
+            <small>JPG, PNG o captura desde camara</small>
+          </label>
+          <input id="imageInput" type="file" accept="image/*">
+
+          <div class="field">
+            <label for="confidence">Confianza minima</label>
+            <div class="range-row">
+              <input id="confidence" type="range" min="0.1" max="0.9" value="{{ confidence }}" step="0.05">
+              <strong id="confidenceValue">{{ confidence }}</strong>
+            </div>
+          </div>
+
+          <div class="button-row">
+            <button id="detectUpload" type="button">Detectar imagen</button>
+            <button id="startCamera" type="button" class="secondary">Iniciar camara</button>
+          </div>
+
+          <div class="camera-box" id="cameraBox">
+            <video id="video" autoplay playsinline></video>
+            <button id="captureFrame" type="button">Deteccion en vivo</button>
+            <button id="stopLive" type="button" class="secondary">Detener</button>
+          </div>
+
+          <div class="classes">
+            <h2>Clases del modelo</h2>
+            <div class="chips">
+              {% for label in labels %}
+                <span>{{ label }}</span>
+              {% endfor %}
+            </div>
+          </div>
+        </aside>
+
+        <section class="results">
+          <div class="preview-grid">
+            <article class="image-panel">
+              <header>Entrada</header>
+              <img id="inputPreview" alt="">
+              <div class="empty" id="inputEmpty">Aun no hay imagen</div>
+            </article>
+            <article class="image-panel">
+              <header>Resultado</header>
+              <img id="outputPreview" alt="">
+              <div class="empty" id="outputEmpty">Aun no hay deteccion</div>
+            </article>
+          </div>
+
+          <article class="live-state" id="liveState">No detecta nada</article>
+
+          <article class="table-panel">
+            <header>
+              <h2>Detecciones</h2>
+              <span id="summary">0 objetos</span>
+            </header>
+            <div class="table-wrap">
+              <table>
+                <thead>
+                  <tr>
+                    <th>Objeto</th>
+                    <th>Confianza</th>
+                    <th>Coordenadas</th>
+                  </tr>
+                </thead>
+                <tbody id="detectionsBody">
+                  <tr><td colspan="3">Sin resultados todavia.</td></tr>
+                </tbody>
+              </table>
+            </div>
+          </article>
+        </section>
+      </section>
+    </main>
+
+    <script src="{{ url_for('static', filename='app.js') }}"></script>
+  </body>
+</html>

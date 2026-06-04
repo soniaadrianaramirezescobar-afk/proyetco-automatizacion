@@ -1,0 +1,316 @@
+:root {
+  color-scheme: light;
+  --bg: #f5f7fb;
+  --panel: #ffffff;
+  --ink: #18212f;
+  --muted: #667085;
+  --line: #d9e0ea;
+  --accent: #0f8b8d;
+  --accent-dark: #0a6c6e;
+  --danger: #b42318;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--ink);
+  font-family: Arial, Helvetica, sans-serif;
+}
+
+.shell {
+  width: min(1180px, calc(100vw - 32px));
+  margin: 0 auto;
+  padding: 24px 0;
+}
+
+.topbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  margin-bottom: 18px;
+}
+
+h1,
+h2,
+p {
+  margin: 0;
+}
+
+h1 {
+  font-size: 30px;
+  line-height: 1.15;
+}
+
+.topbar p {
+  margin-top: 6px;
+  color: var(--muted);
+  font-size: 14px;
+}
+
+.status {
+  min-width: 120px;
+  padding: 10px 14px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--panel);
+  color: var(--muted);
+  text-align: center;
+  font-size: 14px;
+}
+
+.status.error {
+  color: var(--danger);
+  border-color: #f1a5a0;
+}
+
+.workspace {
+  display: grid;
+  grid-template-columns: 310px 1fr;
+  gap: 18px;
+}
+
+.panel,
+.image-panel,
+.table-panel {
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--panel);
+}
+
+.controls {
+  padding: 16px;
+  align-self: start;
+}
+
+.file-drop {
+  display: grid;
+  place-items: center;
+  min-height: 118px;
+  border: 1px dashed #9aa8ba;
+  border-radius: 8px;
+  background: #fafcff;
+  cursor: pointer;
+  text-align: center;
+}
+
+.file-drop span {
+  font-weight: 700;
+}
+
+.file-drop small {
+  display: block;
+  margin-top: 6px;
+  color: var(--muted);
+}
+
+#imageInput {
+  display: none;
+}
+
+.field {
+  margin-top: 18px;
+}
+
+.field label,
+.classes h2 {
+  display: block;
+  margin-bottom: 8px;
+  font-size: 14px;
+  font-weight: 700;
+}
+
+.range-row {
+  display: grid;
+  grid-template-columns: 1fr 44px;
+  align-items: center;
+  gap: 10px;
+}
+
+.range-row strong {
+  text-align: right;
+}
+
+button {
+  min-height: 42px;
+  border: 0;
+  border-radius: 8px;
+  background: var(--accent);
+  color: #fff;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+button:hover {
+  background: var(--accent-dark);
+}
+
+button.secondary {
+  border: 1px solid var(--line);
+  background: #fff;
+  color: var(--ink);
+}
+
+.button-row {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px;
+  margin-top: 18px;
+}
+
+.camera-box {
+  display: none;
+  margin-top: 14px;
+}
+
+.camera-box.active {
+  display: grid;
+  gap: 10px;
+}
+
+.camera-box button {
+  width: 100%;
+}
+
+video {
+  width: 100%;
+  aspect-ratio: 4 / 3;
+  border-radius: 8px;
+  background: #111827;
+  object-fit: cover;
+}
+
+.classes {
+  margin-top: 18px;
+}
+
+.chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.chips span {
+  padding: 6px 9px;
+  border-radius: 999px;
+  background: #eef6f6;
+  color: #075456;
+  font-size: 13px;
+}
+
+.results {
+  display: grid;
+  gap: 18px;
+}
+
+.live-state {
+  min-height: 58px;
+  display: flex;
+  align-items: center;
+  padding: 0 18px;
+  border: 1px solid #f1a5a0;
+  border-radius: 8px;
+  background: #fff7f6;
+  color: var(--danger);
+  font-size: 20px;
+  font-weight: 800;
+}
+
+.live-state.detected {
+  border-color: #95d5b2;
+  background: #f0fff7;
+  color: #087443;
+}
+
+.preview-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 18px;
+}
+
+.image-panel {
+  min-height: 360px;
+  overflow: hidden;
+  position: relative;
+}
+
+.image-panel header,
+.table-panel header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  min-height: 48px;
+  padding: 0 14px;
+  border-bottom: 1px solid var(--line);
+  font-weight: 700;
+}
+
+.image-panel img {
+  display: none;
+  width: 100%;
+  height: 312px;
+  object-fit: contain;
+  background: #f8fafc;
+}
+
+.image-panel img.active {
+  display: block;
+}
+
+.empty {
+  display: grid;
+  place-items: center;
+  height: 312px;
+  color: var(--muted);
+}
+
+.empty.hidden {
+  display: none;
+}
+
+.table-panel h2 {
+  font-size: 17px;
+}
+
+#summary {
+  color: var(--muted);
+  font-size: 14px;
+}
+
+.table-wrap {
+  overflow-x: auto;
+}
+
+table {
+  width: 100%;
+  border-collapse: collapse;
+}
+
+th,
+td {
+  padding: 12px 14px;
+  border-bottom: 1px solid var(--line);
+  text-align: left;
+  font-size: 14px;
+}
+
+th {
+  color: var(--muted);
+  font-weight: 700;
+}
+
+@media (max-width: 860px) {
+  .topbar,
+  .workspace,
+  .preview-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .topbar {
+    display: grid;
+  }
+}
