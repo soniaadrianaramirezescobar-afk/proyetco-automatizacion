@@ -350,6 +350,7 @@ async function framePayload() {
 async function sendLiveFrame() {
   frameCount += 1;
   const analyzeSeal = frameCount % SEAL_ANALYSIS_EVERY === 0;
+  const readText = frameCount % (SEAL_ANALYSIS_EVERY * 3) === 0;
   showLiveCamera();
 
   const response = await fetch("/api/live_droidcam", {
@@ -359,7 +360,7 @@ async function sendLiveFrame() {
       confidence: confidence.value,
       qr_codes: [],
       analyze_seal: analyzeSeal,
-      read_text: false,
+      read_text: readText,
       return_annotated: false,
     }),
   });
@@ -499,7 +500,7 @@ async function detectSelectedImage() {
   formData.append("image", file);
   formData.append("confidence", confidence.value);
   formData.append("analyze_seal", "true");
-  formData.append("read_text", "false");
+  formData.append("read_text", "true");
   formData.append("return_annotated", "true");
 
   try {

@@ -4,6 +4,7 @@ import os
 import re
 import argparse
 import threading
+import sys
 from pathlib import Path
 
 BASE_DIR = Path(__file__).resolve().parent
@@ -36,6 +37,21 @@ YOLO_MAX_DETECTIONS = int(os.environ.get("YOLO_MAX_DETECTIONS", "50"))
 EXPECTED_QR_URL = "http://www.tcf.aduana.gob.bo"
 OCR_LANG = os.environ.get("TESSERACT_LANG", "eng")
 DROIDCAM_URL = os.environ.get("DROIDCAM_URL", "http://192.168.26.2:4747/video")
+TESSERACT_CMD = os.environ.get("TESSERACT_CMD")
+TESSDATA_PREFIX = os.environ.get("TESSDATA_PREFIX")
+
+if pytesseract is not None:
+    if TESSERACT_CMD:
+        pytesseract.pytesseract.tesseract_cmd = TESSERACT_CMD
+    else:
+        env_tesseract = Path(sys.prefix) / "Library" / "bin" / "tesseract.exe"
+        if env_tesseract.exists():
+            pytesseract.pytesseract.tesseract_cmd = str(env_tesseract)
+
+    if not TESSDATA_PREFIX:
+        env_tessdata = Path(sys.prefix) / "share" / "tessdata"
+        if (env_tessdata / f"{OCR_LANG}.traineddata").exists():
+            os.environ["TESSDATA_PREFIX"] = str(env_tessdata)
 
 app = Flask(__name__)
 app.config["SEND_FILE_MAX_AGE_DEFAULT"] = 0
@@ -326,52 +342,164 @@ def decode_qr_values(frame, detections, qr_hints=None):
 
 
 def ocr_variants(crop):
-    gray = cv2.cvtColor(crop, cv2.COLOR_RGB2GRAY)
-    gray = cv2.resize(gray, None, fx=2, fy=2, interpolation=cv2.INTER_CUBIC)
-    gray = cv2.bilateralFilter(gray, 7, 55, 55)
-    clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
-    gray = clahe.apply(gray)
-    _, otsu = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
-    adaptive = cv2.adaptiveThreshold(
-        gray,
-        255,
-        cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
-        cv2.THRESH_BINARY,
-        31,
-        8,
-    )
-    variants = [gray, otsu, adaptive]
-    variants.extend(cv2.flip(item, 1) for item in variants)
+    rotations = [
+        cv2.rotate(crop, cv2.ROTATE_90_CLOCKWISE),
+        crop,
+        cv2.rotate(crop, cv2.ROTATE_90_COUNTERCLOCKWISE),
+    ]
+    variants = []
+
+    for rotated in rotations:
+        gray = cv2.cvtColor(rotated, cv2.COLOR_RGB2GRAY)
+        gray = cv2.resize(gray, None, fx=2.0, fy=2.0, interpolation=cv2.INTER_CUBIC)
+        gray = cv2.bilateralFilter(gray, 7, 55, 55)
+        clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
+        equalized = clahe.apply(gray)
+        blur = cv2.GaussianBlur(equalized, (0, 0), 1.0)
+        sharp = cv2.addWeighted(equalized, 1.7, blur, -0.7, 0)
+        _, otsu = cv2.threshold(sharp, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+        variants.extend([equalized, sharp, otsu])
+
     return variants
 
 
-def extract_numeric_series(frame, detections):
+def serial_focused_crops(frame, qr_codes):
+    crops = []
+    height, width = frame.shape[:2]
+
+    for qr in qr_codes:
+        box = qr.get("box") or {}
+        try:
+            x1 = int(box["x1"])
+            y1 = int(box["y1"])
+            x2 = int(box["x2"])
+            y2 = int(box["y2"])
+        except (KeyError, TypeError, ValueError):
+            continue
+
+        qr_w = max(1, x2 - x1)
+        qr_h = max(1, y2 - y1)
+        regions = [
+            (
+                max(0, x1 - int(qr_w * 0.8)),
+                max(0, y1 - int(qr_h * 3.6)),
+                min(width, x2 + int(qr_w * 2.1)),
+                min(height, y2 + int(qr_h * 0.8)),
+            ),
+            (
+                max(0, x1 - int(qr_w * 0.3)),
+                max(0, y1 - int(qr_h * 3.2)),
+                min(width, x2 + int(qr_w * 1.3)),
+                min(height, y1 + int(qr_h * 0.5)),
+            ),
+        ]
+
+        for left, top, right, bottom in regions:
+            crop = frame[top:bottom, left:right]
+            if crop.size:
+                crops.append((crop, (left, top, right, bottom)))
+
+    return crops
+
+
+def normalize_serial_candidate(value):
+    value = re.sub(r"[^A-Z0-9]", "", value.upper())
+    value = value.replace(" ", "")
+    if not value:
+        return ""
+
+    # The seal series commonly starts as 25C..., but OCR often reads C as U/O/0.
+    value = re.sub(r"^25[UO0]([0-9])", r"25C\1", value)
+
+    if value.startswith("25C"):
+        head = "25C"
+        tail = value[3:].translate(str.maketrans({"O": "0", "Q": "0", "D": "0", "I": "1", "L": "1", "Z": "2", "S": "5", "B": "8"}))
+        normalized = head + tail
+        return normalized[:16] if len(normalized) > 16 else normalized
+
+    return value
+
+
+def series_candidates_from_text(text):
+    clean = re.sub(r"[^A-Z0-9]", "", text.upper())
+    raw_candidates = re.findall(r"[A-Z0-9]{8,}", clean)
+    candidates = []
+
+    for raw in raw_candidates:
+        normalized = normalize_serial_candidate(raw)
+        if not normalized:
+            continue
+
+        pattern_matches = re.findall(r"25[CUO0][A-Z0-9]{10,15}", normalized)
+        candidates.extend(normalize_serial_candidate(item) for item in pattern_matches)
+        candidates.append(normalized)
+
+    return [
+        item
+        for item in candidates
+        if 10 <= len(item) <= 18 and sum(char.isdigit() for char in item) >= 7
+    ]
+
+
+def is_strong_series_candidate(value):
+    return value.startswith("25C") and 14 <= len(value) <= 18 and sum(char.isdigit() for char in value) >= 12
+
+
+def extract_numeric_series(frame, detections, qr_codes=None):
     if pytesseract is None:
         return [], "", "Instala pytesseract para activar el OCR de la serie."
 
     texts = []
     candidates = []
     configs = [
-        "--oem 3 --psm 6 -c tessedit_char_whitelist=0123456789",
-        "--oem 3 --psm 11 -c tessedit_char_whitelist=0123456789",
+        "--oem 3 --psm 6 -c tessedit_char_whitelist=ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789",
+        "--oem 3 --psm 11 -c tessedit_char_whitelist=ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789",
     ]
 
     try:
-        for crop, _ in inspection_crops(frame, detections):
+        crops = serial_focused_crops(frame, qr_codes or [])
+        if not crops:
+            crops = inspection_crops(frame, detections)
+
+        for crop, _ in crops:
             if crop.size == 0:
                 continue
 
             for processed in ocr_variants(crop):
                 for config in configs:
-                    text = pytesseract.image_to_string(processed, lang=OCR_LANG, config=config)
+                    text = pytesseract.image_to_string(processed, lang=OCR_LANG, config=config, timeout=4)
                     clean_text = re.sub(r"\s+", " ", text).strip()
                     if clean_text:
                         texts.append(clean_text)
-                        candidates.extend(re.findall(r"\d{3,}", clean_text))
+                        new_candidates = series_candidates_from_text(clean_text)
+                        candidates.extend(new_candidates)
+                        if any(is_strong_series_candidate(candidate) for candidate in new_candidates):
+                            unique_candidates = sorted(
+                                set(candidates),
+                                key=lambda value: (
+                                    not value.startswith("25C"),
+                                    abs(len(value) - 16),
+                                    -sum(char.isdigit() for char in value),
+                                    value,
+                                ),
+                            )
+                            unique_texts = list(dict.fromkeys(texts))
+                            return unique_candidates[:8], " | ".join(unique_texts[:8]), None
     except TesseractNotFoundError:
         return [], "", "Tesseract no esta instalado o no esta en el PATH."
+    except RuntimeError as exc:
+        if "Tesseract process timeout" not in str(exc):
+            raise
 
-    unique_candidates = sorted(set(candidates), key=lambda value: (-len(value), value))
+    unique_candidates = sorted(
+        set(candidates),
+        key=lambda value: (
+            not value.startswith("25C"),
+            abs(len(value) - 16),
+            -sum(char.isdigit() for char in value),
+            value,
+        ),
+    )
     unique_texts = list(dict.fromkeys(texts))
     return unique_candidates[:8], " | ".join(unique_texts[:8]), None
 
@@ -380,7 +508,7 @@ def analyze_seal(image, detections, qr_hints=None, read_text=True):
     frame = np.array(image)
     qr_codes = decode_qr_values(frame, detections, qr_hints)
     if read_text:
-        series, raw_text, ocr_error = extract_numeric_series(frame, detections)
+        series, raw_text, ocr_error = extract_numeric_series(frame, detections, qr_codes)
     else:
         series = []
         raw_text = ""
