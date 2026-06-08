@@ -1,0 +1,28 @@
+def color_inversion(self, image):
+        """
+        FIXED VERSION - No more overflow errors
+        """
+        variant = random.choice(['invert', 'hue_shift', 'channel_shift'])
+        
+        try:
+            if variant == 'invert':
+                return 255 - image
+            
+            elif variant == 'hue_shift':
+                # SAFE HSV conversion
+                hsv = cv2.cvtColor(image, cv2.COLOR_BGR2HSV)
+                hsv_float = hsv.astype(np.float32)
+                hue_shift = random.randint(-30, 30)
+                hsv_float[:, :, 0] = (hsv_float[:, :, 0] + hue_shift) % 180
+                hsv_safe = np.clip(hsv_float, 0, 255).astype(np.uint8)
+                return cv2.cvtColor(hsv_safe, cv2.COLOR_HSV2BGR)
+            
+            else:  # channel_shift
+                b, g, r = cv2.split(image)
+                channels = [b, g, r]
+                random.shuffle(channels)
+                return cv2.merge(channels)
+                
+        except Exception as e:
+            print(f"Color inversion failed, using original image: {e}")
+            return image

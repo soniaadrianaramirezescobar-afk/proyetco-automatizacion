@@ -4,7 +4,7 @@ Aplicacion web local para detectar en tiempo real el estado de una botella usand
 
 ## Que detecta
 
-El modelo incluido por defecto es `models/best04052026.pt` y reconoce estas clases:
+El modelo incluido por defecto es `models/080062026.pt` y reconoce estas clases:
 
 - `contenido_correcto`
 - `contenido_incorrecto`
@@ -73,7 +73,7 @@ http://127.0.0.1:5000
 Por defecto la app usa:
 
 ```text
-models/best04052026.pt
+models/080062026.pt
 ```
 
 Para usar otro modelo en PowerShell:

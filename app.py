@@ -1,10 +1,16 @@
 import base64
 import io
 import os
+import re
+import argparse
+import threading
 from pathlib import Path
 
 BASE_DIR = Path(__file__).resolve().parent
 os.environ.setdefault("YOLO_CONFIG_DIR", str(BASE_DIR / ".ultralytics"))
+os.environ.setdefault("OMP_NUM_THREADS", "1")
+os.environ.setdefault("MKL_NUM_THREADS", "1")
+os.environ.setdefault("OPENBLAS_NUM_THREADS", "1")
 
 import cv2
 import numpy as np
@@ -12,13 +18,48 @@ from flask import Flask, jsonify, render_template, request
 from PIL import Image
 from ultralytics import YOLO
 
+try:
+    import pytesseract
+    from pytesseract import TesseractNotFoundError
+except ImportError:
+    pytesseract = None
 
-DEFAULT_MODEL = BASE_DIR / "models" / "best04052026.pt"
+    class TesseractNotFoundError(Exception):
+        pass
+
+
+DEFAULT_MODEL = BASE_DIR / "models" / "080062026.pt"
 MODEL_PATH = Path(os.environ.get("YOLO_MODEL_PATH", DEFAULT_MODEL))
-CONFIDENCE_DEFAULT = float(os.environ.get("YOLO_CONFIDENCE", "0.35"))
+CONFIDENCE_DEFAULT = float(os.environ.get("YOLO_CONFIDENCE", "0.20"))
+YOLO_IMAGE_SIZE = int(os.environ.get("YOLO_IMAGE_SIZE", "640"))
+YOLO_MAX_DETECTIONS = int(os.environ.get("YOLO_MAX_DETECTIONS", "50"))
+EXPECTED_QR_URL = "http://www.tcf.aduana.gob.bo"
+OCR_LANG = os.environ.get("TESSERACT_LANG", "eng")
+DROIDCAM_URL = os.environ.get("DROIDCAM_URL", "http://192.168.26.2:4747/video")
 
 app = Flask(__name__)
-model = YOLO(str(MODEL_PATH))
+app.config["SEND_FILE_MAX_AGE_DEFAULT"] = 0
+model = None
+model_lock = threading.Lock()
+inference_lock = threading.Lock()
+droidcam_cap = None
+droidcam_lock = threading.Lock()
+
+
+def get_model():
+    global model
+    if model is None:
+        with model_lock:
+            if model is None:
+                try:
+                    import torch
+
+                    torch.set_num_threads(1)
+                    torch.set_num_interop_threads(1)
+                except Exception:
+                    pass
+                model = YOLO(str(MODEL_PATH))
+    return model
 
 
 def image_from_request():
@@ -43,17 +84,67 @@ def encode_image(image_rgb):
     return base64.b64encode(buffer).decode("utf-8")
 
 
-def run_detection(image, confidence):
+def get_droidcam_capture():
+    global droidcam_cap
+    if droidcam_cap is None or not droidcam_cap.isOpened():
+        droidcam_cap = cv2.VideoCapture(DROIDCAM_URL)
+        droidcam_cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
+    return droidcam_cap
+
+
+def reset_droidcam_capture():
+    global droidcam_cap
+    if droidcam_cap is not None:
+        droidcam_cap.release()
+        droidcam_cap = None
+
+
+def image_from_droidcam():
+    with droidcam_lock:
+        cap = get_droidcam_capture()
+        frame = None
+
+        # Drop queued frames so detection follows what the phone sees now.
+        for _ in range(4):
+            cap.grab()
+
+        ok, frame = cap.read()
+        if not ok or frame is None:
+            reset_droidcam_capture()
+            cap = get_droidcam_capture()
+            ok, frame = cap.read()
+
+        if not ok or frame is None:
+            raise ValueError(f"No se pudo leer DroidCam en {DROIDCAM_URL}. Verifica IP, puerto y WiFi.")
+
+    frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+    return Image.fromarray(frame_rgb)
+
+
+def request_bool(payload, key, default=True):
+    value = payload.get(key, default)
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return value != 0
+    if isinstance(value, str):
+        return value.strip().lower() not in {"0", "false", "no", "off", ""}
+    return bool(value)
+
+
+def run_detection(image, confidence, return_annotated=True):
     frame = np.array(image)
-    result = model.predict(
+    detector = get_model()
+    result = detector.predict(
         frame,
         conf=confidence,
+        imgsz=YOLO_IMAGE_SIZE,
         iou=0.8,
-        max_det=50,
+        max_det=YOLO_MAX_DETECTIONS,
         agnostic_nms=False,
         verbose=False,
     )[0]
-    annotated = result.plot()
+    annotated = result.plot() if return_annotated else None
 
     detections = []
     for box in result.boxes:
@@ -75,36 +166,351 @@ def run_detection(image, confidence):
     return annotated, detections
 
 
+def expanded_crop(frame, detection, padding=0.18):
+    height, width = frame.shape[:2]
+    x1 = detection["x1"]
+    y1 = detection["y1"]
+    x2 = detection["x2"]
+    y2 = detection["y2"]
+    pad_x = int((x2 - x1) * padding)
+    pad_y = int((y2 - y1) * padding)
+    left = max(0, x1 - pad_x)
+    top = max(0, y1 - pad_y)
+    right = min(width, x2 + pad_x)
+    bottom = min(height, y2 + pad_y)
+    return frame[top:bottom, left:right], (left, top, right, bottom)
+
+
+def seal_crops(frame, detections):
+    crops = [
+        expanded_crop(frame, detection)
+        for detection in detections
+        if "sello" in detection["label"].lower()
+    ]
+    return crops or [(frame, (0, 0, frame.shape[1], frame.shape[0]))]
+
+
+def inspection_crops(frame, detections):
+    crops = []
+    seen = set()
+
+    def add_crop(crop, box):
+        if box in seen or crop.size == 0:
+            return
+        seen.add(box)
+        crops.append((crop, box))
+
+    for crop, box in seal_crops(frame, detections):
+        add_crop(crop, box)
+
+    height, width = frame.shape[:2]
+    add_crop(frame, (0, 0, width, height))
+
+    # Extra regions help when YOLO does not catch the seal but the label is visible.
+    add_crop(frame[:, width // 3 :], (width // 3, 0, width, height))
+    add_crop(frame[height // 4 : height * 3 // 4, :], (0, height // 4, width, height * 3 // 4))
+    return crops
+
+
+def qr_preprocessed_variants(image):
+    gray = cv2.cvtColor(image, cv2.COLOR_RGB2GRAY) if image.ndim == 3 else image
+    blur = cv2.GaussianBlur(gray, (0, 0), 1.0)
+    sharp = cv2.addWeighted(gray, 1.6, blur, -0.6, 0)
+    _, otsu = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+    adaptive = cv2.adaptiveThreshold(
+        gray,
+        255,
+        cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
+        cv2.THRESH_BINARY,
+        31,
+        5,
+    )
+    return [image, gray, cv2.equalizeHist(gray), sharp, otsu, adaptive]
+
+
+def qr_variants(crop):
+    variants = []
+    height, width = crop.shape[:2]
+    max_side = max(height, width)
+    scales = [1.0, 2.0]
+    if min(height, width) < 420:
+        scales.append(max(3.0, 420 / max(1, min(height, width))))
+
+    for scale in scales:
+        if scale == 1.0:
+            resized = crop
+        else:
+            resized = cv2.resize(crop, None, fx=scale, fy=scale, interpolation=cv2.INTER_CUBIC)
+
+        variants.extend((variant, scale) for variant in qr_preprocessed_variants(resized))
+
+        # Some phone/camera paths mirror frames; this keeps QR reading tolerant.
+        if max_side < 900:
+            variants.extend((variant, scale) for variant in qr_preprocessed_variants(cv2.flip(resized, 1)))
+
+    return variants
+
+
+def decode_qr_from_image(detector, image):
+    decoded = []
+    ok, decoded_info, points, _ = detector.detectAndDecodeMulti(image)
+    if ok and decoded_info:
+        point_sets = points if points is not None else [None] * len(decoded_info)
+        decoded = [
+            {"value": value, "points": point_set}
+            for value, point_set in zip(decoded_info, point_sets)
+            if value
+        ]
+
+    if not decoded:
+        value, points, _ = detector.detectAndDecode(image)
+        if value:
+            decoded = [{"value": value, "points": points}]
+
+    return decoded
+
+
+def add_qr_value(values, value, box=None, source="opencv"):
+    value = (value or "").strip()
+    if not value or any(existing["value"] == value for existing in values):
+        return
+
+    values.append(
+        {
+            "value": value,
+            "is_expected": value == EXPECTED_QR_URL,
+            "box": box,
+            "source": source,
+        }
+    )
+
+
+def decode_qr_values(frame, detections, qr_hints=None):
+    detector = cv2.QRCodeDetector()
+    try:
+        detector.setEpsX(0.4)
+        detector.setEpsY(0.4)
+    except Exception:
+        pass
+    values = []
+
+    for hint in qr_hints or []:
+        add_qr_value(values, hint, source="browser")
+
+    for crop, (left, top, _, _) in inspection_crops(frame, detections):
+        decoded = []
+        for variant, scale in qr_variants(crop):
+            decoded = decode_qr_from_image(detector, variant)
+            if decoded:
+                break
+
+        for item in decoded:
+            box = None
+            points = item.get("points")
+            if points is not None:
+                pts = np.array(points).reshape(-1, 2)
+                if scale != 1.0:
+                    pts = pts / scale
+                x1, y1 = np.min(pts, axis=0).astype(int)
+                x2, y2 = np.max(pts, axis=0).astype(int)
+                box = {
+                    "x1": int(x1 + left),
+                    "y1": int(y1 + top),
+                    "x2": int(x2 + left),
+                    "y2": int(y2 + top),
+                }
+
+            add_qr_value(values, item["value"], box=box)
+
+    return values
+
+
+def ocr_variants(crop):
+    gray = cv2.cvtColor(crop, cv2.COLOR_RGB2GRAY)
+    gray = cv2.resize(gray, None, fx=2, fy=2, interpolation=cv2.INTER_CUBIC)
+    gray = cv2.bilateralFilter(gray, 7, 55, 55)
+    clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
+    gray = clahe.apply(gray)
+    _, otsu = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+    adaptive = cv2.adaptiveThreshold(
+        gray,
+        255,
+        cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
+        cv2.THRESH_BINARY,
+        31,
+        8,
+    )
+    variants = [gray, otsu, adaptive]
+    variants.extend(cv2.flip(item, 1) for item in variants)
+    return variants
+
+
+def extract_numeric_series(frame, detections):
+    if pytesseract is None:
+        return [], "", "Instala pytesseract para activar el OCR de la serie."
+
+    texts = []
+    candidates = []
+    configs = [
+        "--oem 3 --psm 6 -c tessedit_char_whitelist=0123456789",
+        "--oem 3 --psm 11 -c tessedit_char_whitelist=0123456789",
+    ]
+
+    try:
+        for crop, _ in inspection_crops(frame, detections):
+            if crop.size == 0:
+                continue
+
+            for processed in ocr_variants(crop):
+                for config in configs:
+                    text = pytesseract.image_to_string(processed, lang=OCR_LANG, config=config)
+                    clean_text = re.sub(r"\s+", " ", text).strip()
+                    if clean_text:
+                        texts.append(clean_text)
+                        candidates.extend(re.findall(r"\d{3,}", clean_text))
+    except TesseractNotFoundError:
+        return [], "", "Tesseract no esta instalado o no esta en el PATH."
+
+    unique_candidates = sorted(set(candidates), key=lambda value: (-len(value), value))
+    unique_texts = list(dict.fromkeys(texts))
+    return unique_candidates[:8], " | ".join(unique_texts[:8]), None
+
+
+def analyze_seal(image, detections, qr_hints=None, read_text=True):
+    frame = np.array(image)
+    qr_codes = decode_qr_values(frame, detections, qr_hints)
+    if read_text:
+        series, raw_text, ocr_error = extract_numeric_series(frame, detections)
+    else:
+        series = []
+        raw_text = ""
+        ocr_error = None
+    qr_ok = any(qr["is_expected"] for qr in qr_codes)
+
+    return {
+        "expected_url": EXPECTED_QR_URL,
+        "qr_codes": qr_codes,
+        "qr_ok": qr_ok,
+        "seal_status": "Sello correcto" if qr_ok else "Sello por verificar",
+        "series": series,
+        "raw_text": raw_text,
+        "ocr_error": ocr_error,
+        "text_checked": read_text,
+    }
+
+
 @app.get("/")
 def index():
-    names = getattr(model, "names", {})
+    detector = get_model()
+    names = getattr(detector, "names", {})
     labels = [names[k] for k in sorted(names)] if isinstance(names, dict) else list(names)
+    static_version = int(max((BASE_DIR / "static" / "app.js").stat().st_mtime, (BASE_DIR / "static" / "styles.css").stat().st_mtime))
     return render_template(
         "index.html",
         model_path=str(MODEL_PATH.relative_to(BASE_DIR) if MODEL_PATH.is_relative_to(BASE_DIR) else MODEL_PATH),
         labels=labels,
         confidence=CONFIDENCE_DEFAULT,
+        static_version=static_version,
     )
 
 
 @app.post("/api/detect")
 def detect():
     try:
-        confidence = float(request.form.get("confidence") or (request.get_json(silent=True) or {}).get("confidence") or CONFIDENCE_DEFAULT)
+        payload = request.get_json(silent=True) or {}
+        if request.form:
+            payload = {**payload, **request.form.to_dict()}
+        confidence = float(payload.get("confidence") or CONFIDENCE_DEFAULT)
         confidence = max(0.01, min(confidence, 0.99))
+        return_annotated = request_bool(payload, "return_annotated", True)
         image = image_from_request()
-        annotated, detections = run_detection(image, confidence)
+        if not inference_lock.acquire(blocking=False):
+            return jsonify({"ok": False, "error": "El detector esta ocupado. Intenta de nuevo en un momento."}), 429
+
+        try:
+            annotated, detections = run_detection(image, confidence, return_annotated)
+            seal = None
+            if request_bool(payload, "analyze_seal", True):
+                seal = analyze_seal(
+                    image,
+                    detections,
+                    payload.get("qr_codes") or [],
+                    request_bool(payload, "read_text", True),
+                )
+        finally:
+            inference_lock.release()
+
         return jsonify(
             {
                 "ok": True,
                 "detections": detections,
                 "count": len(detections),
-                "annotated_image": f"data:image/jpeg;base64,{encode_image(annotated)}",
+                "seal": seal,
+                "annotated_image": f"data:image/jpeg;base64,{encode_image(annotated)}" if annotated is not None else None,
             }
         )
     except Exception as exc:
         return jsonify({"ok": False, "error": str(exc)}), 400
 
 
+@app.post("/api/live_droidcam")
+def live_droidcam():
+    try:
+        payload = request.get_json(silent=True) or {}
+        confidence = float(payload.get("confidence") or CONFIDENCE_DEFAULT)
+        confidence = max(0.01, min(confidence, 0.99))
+        return_annotated = request_bool(payload, "return_annotated", False)
+        image = image_from_droidcam()
+        if not inference_lock.acquire(blocking=False):
+            return jsonify({"ok": False, "error": "El detector esta ocupado. Intenta de nuevo en un momento."}), 429
+
+        try:
+            annotated, detections = run_detection(image, confidence, return_annotated)
+            seal = None
+            if request_bool(payload, "analyze_seal", False):
+                seal = analyze_seal(
+                    image,
+                    detections,
+                    payload.get("qr_codes") or [],
+                    request_bool(payload, "read_text", False),
+                )
+        finally:
+            inference_lock.release()
+
+        width, height = image.size
+        response = {
+            "ok": True,
+            "detections": detections,
+            "count": len(detections),
+            "seal": seal,
+            "frame_image": f"data:image/jpeg;base64,{encode_image(np.array(image))}",
+            "width": width,
+            "height": height,
+        }
+        if annotated is not None:
+            response["annotated_image"] = f"data:image/jpeg;base64,{encode_image(annotated)}"
+        return jsonify(response)
+    except Exception as exc:
+        return jsonify({"ok": False, "error": str(exc)}), 400
+
+
+def main():
+    parser = argparse.ArgumentParser(description="Aplicacion Flask para deteccion con YOLO.")
+    parser.add_argument(
+        "--serve",
+        action="store_true",
+        help="Inicia el servidor web local.",
+    )
+    parser.add_argument("--host", default="127.0.0.1", help="Host del servidor.")
+    parser.add_argument("--port", type=int, default=5000, help="Puerto del servidor.")
+    args = parser.parse_args()
+
+    if not args.serve:
+        print("Servidor no iniciado. Usa: python app.py --serve")
+        return
+
+    app.run(host=args.host, port=args.port, debug=False)
+
+
 if __name__ == "__main__":
-    app.run(host="127.0.0.1", port=5000, debug=False)
+    main()

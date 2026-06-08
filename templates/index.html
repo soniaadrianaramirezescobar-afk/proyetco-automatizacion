@@ -4,7 +4,7 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>Detector YOLO</title>
-    <link rel="stylesheet" href="{{ url_for('static', filename='styles.css') }}">
+    <link rel="stylesheet" href="{{ url_for('static', filename='styles.css') }}?v={{ static_version }}">
   </head>
   <body>
     <main class="shell">
@@ -40,6 +40,17 @@
             </div>
           </div>
 
+          <div class="control-group">
+            <div class="group-title">
+              <h2>Foto de prueba</h2>
+            </div>
+            <label class="file-picker" for="testImage">
+              <span id="testImageName">Elegir imagen</span>
+              <input id="testImage" type="file" accept="image/*">
+            </label>
+            <button id="detectImage" type="button" class="secondary">Analizar foto</button>
+          </div>
+
           <div class="control-group classes">
             <div class="group-title">
               <h2>Etiquetas</h2>
@@ -53,14 +64,17 @@
         </aside>
 
         <section class="results">
-          <video id="video" class="source-video" autoplay playsinline muted></video>
-
           <div class="scan-layout">
             <article class="image-panel live-panel">
               <header>
                 <span>Deteccion en tiempo real</span>
                 <span id="summary">0 objetos</span>
               </header>
+              <div class="camera-stage">
+                <video id="video" class="source-video" autoplay playsinline muted></video>
+                <img id="droidPreview" class="source-video" alt="">
+                <canvas id="liveOverlay"></canvas>
+              </div>
               <img id="outputPreview" alt="">
               <div class="empty" id="outputEmpty">Camara inactiva</div>
             </article>
@@ -79,6 +93,25 @@
           </div>
 
           <article class="live-state" id="liveState">No detecta nada</article>
+
+          <article class="seal-panel">
+            <header>
+              <h2>Lectura de sello</h2>
+              <span id="sealBadge">Pendiente</span>
+            </header>
+            <div class="seal-grid">
+              <div class="seal-item">
+                <span>QR</span>
+                <strong id="qrStatus">Sin lectura</strong>
+                <a id="qrLink" href="#" target="_blank" rel="noopener">Sin enlace detectado</a>
+              </div>
+              <div class="seal-item">
+                <span>Serie numerica</span>
+                <strong id="seriesValue">Sin lectura</strong>
+                <p id="ocrStatus">Esperando imagen.</p>
+              </div>
+            </div>
+          </article>
 
           <article class="table-panel">
             <header>
@@ -103,6 +136,6 @@
       </section>
     </main>
 
-    <script src="{{ url_for('static', filename='app.js') }}"></script>
+    <script src="{{ url_for('static', filename='app.js') }}?v={{ static_version }}"></script>
   </body>
 </html>
