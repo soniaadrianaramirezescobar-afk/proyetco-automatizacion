@@ -23,3 +23,6 @@ testeo/*/
 .DS_Store
 Thumbs.db
 .vscode/
+
+# Data augmentation folder
+dataugmentation/

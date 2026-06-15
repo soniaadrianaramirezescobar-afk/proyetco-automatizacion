@@ -1,10 +1,13 @@
 import base64
 import io
+import json
 import os
 import re
 import argparse
 import threading
 import sys
+import time
+from collections import deque
 from pathlib import Path
 
 BASE_DIR = Path(__file__).resolve().parent
@@ -20,6 +23,11 @@ from PIL import Image
 from ultralytics import YOLO
 
 try:
+    import paho.mqtt.client as mqtt
+except ImportError:
+    mqtt = None
+
+try:
     import pytesseract
     from pytesseract import TesseractNotFoundError
 except ImportError:
@@ -28,7 +36,8 @@ except ImportError:
     class TesseractNotFoundError(Exception):
         pass
 
-
+#080062026.pt
+#best04052026.pt
 DEFAULT_MODEL = BASE_DIR / "models" / "080062026.pt"
 MODEL_PATH = Path(os.environ.get("YOLO_MODEL_PATH", DEFAULT_MODEL))
 CONFIDENCE_DEFAULT = float(os.environ.get("YOLO_CONFIDENCE", "0.20"))
@@ -36,9 +45,21 @@ YOLO_IMAGE_SIZE = int(os.environ.get("YOLO_IMAGE_SIZE", "640"))
 YOLO_MAX_DETECTIONS = int(os.environ.get("YOLO_MAX_DETECTIONS", "50"))
 EXPECTED_QR_URL = "http://www.tcf.aduana.gob.bo"
 OCR_LANG = os.environ.get("TESSERACT_LANG", "eng")
-DROIDCAM_URL = os.environ.get("DROIDCAM_URL", "http://192.168.26.2:4747/video")
 TESSERACT_CMD = os.environ.get("TESSERACT_CMD")
 TESSDATA_PREFIX = os.environ.get("TESSDATA_PREFIX")
+MQTT_BROKER_HOST = os.environ.get("MQTT_BROKER_HOST", "192.168.1.11")
+MQTT_BROKER_PORT = int(os.environ.get("MQTT_BROKER_PORT", "1883"))
+MQTT_CLIENT_ID = os.environ.get("MQTT_CLIENT_ID", "corona-hmi-ia")
+MQTT_ENABLED = os.environ.get("MQTT_ENABLED", "1").strip().lower() not in {"0", "false", "no", "off"}
+MQTT_TOPICS = [
+    "corona/estado",
+    "corona/sensores",
+    "corona/peso",
+    "corona/alcohol",
+    "corona/ia",
+    "corona/comandos",
+    "corona/eventos",
+]
 
 if pytesseract is not None:
     if TESSERACT_CMD:
@@ -58,8 +79,127 @@ app.config["SEND_FILE_MAX_AGE_DEFAULT"] = 0
 model = None
 model_lock = threading.Lock()
 inference_lock = threading.Lock()
-droidcam_cap = None
-droidcam_lock = threading.Lock()
+mqtt_client = None
+mqtt_started = False
+mqtt_lock = threading.Lock()
+mqtt_state = {
+    "connected": False,
+    "enabled": MQTT_ENABLED,
+    "broker": MQTT_BROKER_HOST,
+    "port": MQTT_BROKER_PORT,
+    "error": None,
+    "last_update": None,
+    "topics": {topic: None for topic in MQTT_TOPICS},
+    "events": deque(maxlen=30),
+}
+
+
+@app.after_request
+def add_no_cache_headers(response):
+    response.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
+    response.headers["Pragma"] = "no-cache"
+    response.headers["Expires"] = "0"
+    return response
+
+
+def now_ms():
+    return int(time.time() * 1000)
+
+
+def parse_mqtt_payload(raw_payload):
+    text = raw_payload.decode("utf-8", errors="replace").strip()
+    if not text:
+        return text
+    try:
+        return json.loads(text)
+    except json.JSONDecodeError:
+        return text
+
+
+def update_mqtt_topic(topic, payload):
+    entry = {
+        "topic": topic,
+        "payload": payload,
+        "received_at": now_ms(),
+    }
+    with mqtt_lock:
+        mqtt_state["topics"][topic] = entry
+        mqtt_state["last_update"] = entry["received_at"]
+        mqtt_state["error"] = None
+        if topic == "corona/eventos":
+            mqtt_state["events"].appendleft(entry)
+
+
+def mqtt_snapshot():
+    with mqtt_lock:
+        return {
+            "connected": mqtt_state["connected"],
+            "enabled": mqtt_state["enabled"],
+            "broker": mqtt_state["broker"],
+            "port": mqtt_state["port"],
+            "error": mqtt_state["error"],
+            "last_update": mqtt_state["last_update"],
+            "topics": dict(mqtt_state["topics"]),
+            "events": list(mqtt_state["events"]),
+        }
+
+
+def on_mqtt_connect(client, userdata, flags, reason_code, properties=None):
+    connected = int(reason_code) == 0
+    with mqtt_lock:
+        mqtt_state["connected"] = connected
+        mqtt_state["error"] = None if connected else f"MQTT no conectado: {reason_code}"
+    if connected:
+        for topic in MQTT_TOPICS:
+            client.subscribe(topic)
+
+
+def on_mqtt_disconnect(client, userdata, reason_code, properties=None):
+    with mqtt_lock:
+        mqtt_state["connected"] = False
+        if int(reason_code) != 0:
+            mqtt_state["error"] = f"MQTT desconectado: {reason_code}"
+
+
+def on_mqtt_message(client, userdata, message):
+    update_mqtt_topic(message.topic, parse_mqtt_payload(message.payload))
+
+
+def start_mqtt_client():
+    global mqtt_client, mqtt_started
+    if mqtt_started or not MQTT_ENABLED:
+        return
+
+    mqtt_started = True
+    if mqtt is None:
+        with mqtt_lock:
+            mqtt_state["error"] = "Instala paho-mqtt para leer MQTT."
+        return
+
+    try:
+        mqtt_client = mqtt.Client(client_id=MQTT_CLIENT_ID, protocol=mqtt.MQTTv311)
+        mqtt_client.on_connect = on_mqtt_connect
+        mqtt_client.on_disconnect = on_mqtt_disconnect
+        mqtt_client.on_message = on_mqtt_message
+        mqtt_client.reconnect_delay_set(min_delay=1, max_delay=15)
+        mqtt_client.connect_async(MQTT_BROKER_HOST, MQTT_BROKER_PORT, keepalive=30)
+        mqtt_client.loop_start()
+    except Exception as exc:
+        with mqtt_lock:
+            mqtt_state["connected"] = False
+            mqtt_state["error"] = str(exc)
+
+
+def publish_mqtt(topic, payload):
+    if not MQTT_ENABLED:
+        raise ValueError("MQTT esta desactivado.")
+    if mqtt_client is None:
+        raise ValueError("MQTT no esta iniciado. Revisa paho-mqtt y la configuracion del broker.")
+    if topic not in MQTT_TOPICS:
+        raise ValueError(f"Topic MQTT no permitido: {topic}")
+    result = mqtt_client.publish(topic, json.dumps(payload), qos=0, retain=False)
+    if result.rc != 0:
+        raise ValueError(f"No se pudo publicar en MQTT. Codigo: {result.rc}")
 
 
 def get_model():
@@ -98,43 +238,6 @@ def encode_image(image_rgb):
     if not ok:
         raise ValueError("No se pudo codificar la imagen resultante.")
     return base64.b64encode(buffer).decode("utf-8")
-
-
-def get_droidcam_capture():
-    global droidcam_cap
-    if droidcam_cap is None or not droidcam_cap.isOpened():
-        droidcam_cap = cv2.VideoCapture(DROIDCAM_URL)
-        droidcam_cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
-    return droidcam_cap
-
-
-def reset_droidcam_capture():
-    global droidcam_cap
-    if droidcam_cap is not None:
-        droidcam_cap.release()
-        droidcam_cap = None
-
-
-def image_from_droidcam():
-    with droidcam_lock:
-        cap = get_droidcam_capture()
-        frame = None
-
-        # Drop queued frames so detection follows what the phone sees now.
-        for _ in range(4):
-            cap.grab()
-
-        ok, frame = cap.read()
-        if not ok or frame is None:
-            reset_droidcam_capture()
-            cap = get_droidcam_capture()
-            ok, frame = cap.read()
-
-        if not ok or frame is None:
-            raise ValueError(f"No se pudo leer DroidCam en {DROIDCAM_URL}. Verifica IP, puerto y WiFi.")
-
-    frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-    return Image.fromarray(frame_rgb)
 
 
 def request_bool(payload, key, default=True):
@@ -532,7 +635,10 @@ def index():
     detector = get_model()
     names = getattr(detector, "names", {})
     labels = [names[k] for k in sorted(names)] if isinstance(names, dict) else list(names)
-    static_version = int(max((BASE_DIR / "static" / "app.js").stat().st_mtime, (BASE_DIR / "static" / "styles.css").stat().st_mtime))
+    static_version = max(
+        (BASE_DIR / "static" / "app.js").stat().st_mtime_ns,
+        (BASE_DIR / "static" / "styles.css").stat().st_mtime_ns,
+    )
     return render_template(
         "index.html",
         model_path=str(MODEL_PATH.relative_to(BASE_DIR) if MODEL_PATH.is_relative_to(BASE_DIR) else MODEL_PATH),
@@ -581,43 +687,49 @@ def detect():
         return jsonify({"ok": False, "error": str(exc)}), 400
 
 
-@app.post("/api/live_droidcam")
-def live_droidcam():
+@app.get("/api/mqtt")
+def mqtt_status():
+    return jsonify({"ok": True, "mqtt": mqtt_snapshot()})
+
+
+@app.post("/api/mqtt/comando")
+def mqtt_command():
     try:
         payload = request.get_json(silent=True) or {}
-        confidence = float(payload.get("confidence") or CONFIDENCE_DEFAULT)
-        confidence = max(0.01, min(confidence, 0.99))
-        return_annotated = request_bool(payload, "return_annotated", False)
-        image = image_from_droidcam()
-        if not inference_lock.acquire(blocking=False):
-            return jsonify({"ok": False, "error": "El detector esta ocupado. Intenta de nuevo en un momento."}), 429
+        command = str(payload.get("comando") or "").strip().lower()
+        allowed = {"iniciar", "pausar", "reanudar", "detener", "reset", "mover_banda", "mover_carrusel", "girar_base"}
+        if command not in allowed:
+            raise ValueError("Comando MQTT no valido.")
 
-        try:
-            annotated, detections = run_detection(image, confidence, return_annotated)
-            seal = None
-            if request_bool(payload, "analyze_seal", False):
-                seal = analyze_seal(
-                    image,
-                    detections,
-                    payload.get("qr_codes") or [],
-                    request_bool(payload, "read_text", False),
-                )
-        finally:
-            inference_lock.release()
+        message = {"comando": command}
+        publish_mqtt("corona/comandos", message)
+        update_mqtt_topic("corona/comandos", message)
+        return jsonify({"ok": True, "comando": command})
+    except Exception as exc:
+        return jsonify({"ok": False, "error": str(exc)}), 400
 
-        width, height = image.size
-        response = {
-            "ok": True,
-            "detections": detections,
-            "count": len(detections),
-            "seal": seal,
-            "frame_image": f"data:image/jpeg;base64,{encode_image(np.array(image))}",
-            "width": width,
-            "height": height,
+
+@app.post("/api/mqtt/ia")
+def mqtt_ai_result():
+    try:
+        payload = request.get_json(silent=True) or {}
+        result = str(payload.get("resultado") or "").strip().lower()
+        if result not in {"normal", "adulterada"}:
+            raise ValueError("Resultado IA no valido.")
+
+        confidence = float(payload.get("confianza") or 0)
+        confidence = max(0.0, min(confidence, 1.0))
+        message = {
+            "resultado": result,
+            "confianza": round(confidence, 4),
         }
-        if annotated is not None:
-            response["annotated_image"] = f"data:image/jpeg;base64,{encode_image(annotated)}"
-        return jsonify(response)
+        detail = str(payload.get("detalle") or "").strip()
+        if detail:
+            message["detalle"] = detail[:80]
+
+        publish_mqtt("corona/ia", message)
+        update_mqtt_topic("corona/ia", message)
+        return jsonify({"ok": True, "ia": message})
     except Exception as exc:
         return jsonify({"ok": False, "error": str(exc)}), 400
 
@@ -637,6 +749,7 @@ def main():
         print("Servidor no iniciado. Usa: python app.py --serve")
         return
 
+    start_mqtt_client()
     app.run(host=args.host, port=args.port, debug=False)
 
 

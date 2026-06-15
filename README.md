@@ -92,6 +92,30 @@ python app.py
 
 Tambien puedes cambiar la confianza desde el control deslizante de la interfaz.
 
+## MQTT
+
+La app lee estos topics y los muestra en el panel `Proceso MQTT`:
+
+```text
+corona/estado
+corona/sensores
+corona/peso
+corona/alcohol
+corona/ia
+corona/comandos
+corona/eventos
+```
+
+Por defecto se conecta a `192.168.1.10:1883`. Para cambiar el broker:
+
+```powershell
+$env:MQTT_BROKER_HOST="192.168.1.10"
+$env:MQTT_BROKER_PORT="1883"
+python app.py --serve
+```
+
+Los botones de MQTT publican comandos en `corona/comandos`, por ejemplo `{"comando":"iniciar"}`.
+
 ## Estructura principal
 
 ```text

@@ -16,5 +16,6 @@ dependencies:
   - pip:
     - ultralytics
     - onnxruntime
+    - paho-mqtt
     - torch
     - torchvision
